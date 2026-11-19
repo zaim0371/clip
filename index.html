@@ -35,15 +35,6 @@ summary{cursor:pointer;font-weight:700}
 <h1>Auto Clip</h1>
 <p class="sub">Unggah video, AI mencari poin pentingnya, lalu kamu tonton, potong, dan bagikan ke TikTok.</p>
 
-<details class="card" id="setup">
-  <summary>Pengaturan server</summary>
-  <div style="margin-top:10px">
-    <label for="cu">Supabase Project URL</label><input id="cu" placeholder="https://xxxx.supabase.co" autocomplete="off">
-    <label for="ck" style="margin-top:8px">Supabase anon key</label><input id="ck" autocomplete="off">
-    <label for="cp" style="margin-top:8px">Password aplikasi</label><input id="cp" type="password" autocomplete="off">
-    <p class="hint">Tersimpan hanya di browser ini.</p>
-  </div>
-</details>
 
 <input id="f" type="file" accept="video/*" aria-label="Pilih video">
 <video id="v" controls playsinline hidden></video>
@@ -66,15 +57,12 @@ summary{cursor:pointer;font-weight:700}
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)},v=$("v"),dur=0,src=null,busy=false,stopAt=null;
-var KEY="autoclip:cfg";
-try{var s=JSON.parse(localStorage.getItem(KEY)||"{}");$("cu").value=s.u||"";$("ck").value=s.k||"";$("cp").value=s.p||"";if(!s.u)$("setup").open=true}catch(e){$("setup").open=true}
-function saveCfg(){try{localStorage.setItem(KEY,JSON.stringify({u:$("cu").value.trim(),k:$("ck").value.trim(),p:$("cp").value}))}catch(e){}}
-["cu","ck","cp"].forEach(function(i){$(i).oninput=saveCfg});
+var SB_URL="https://sgidwhniyoxskrsuevcb.supabase.co",SB_KEY="sb_publishable_FTZd5Hwi4TOBlwFJ_85lDw_PLcxs28k";
 function fmt(n){n=Math.max(0,Math.round(n));var h=Math.floor(n/3600),m=Math.floor(n%3600/60),s=n%60;return (h?h+":"+String(m).padStart(2,"0"):m)+":"+String(s).padStart(2,"0")}
 function msg(t,e){$("msg").textContent=t||"";$("msg").className="msg"+(e?" e":"")}
-function hdr(j){var h={apikey:$("ck").value.trim(),Authorization:"Bearer "+$("ck").value.trim(),"x-app-password":$("cp").value};if(j)h["Content-Type"]="application/json";return h}
+function hdr(j){var h={apikey:SB_KEY,Authorization:"Bearer "+SB_KEY};if(j)h["Content-Type"]="application/json";return h}
 async function api(action,body,form){
-  var u=$("cu").value.trim().replace(/\/$/,"");if(!u)throw new Error("Isi Supabase Project URL di Pengaturan server.");
+  var u=SB_URL;
   var r=await fetch(u+"/functions/v1/auto-clip?action="+action,{method:"POST",headers:hdr(!form),body:form?body:JSON.stringify(body)});
   var d=await r.json().catch(function(){return{}});
   if(!r.ok)throw new Error(d.error||"Server error "+r.status);return d;
