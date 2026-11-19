@@ -106,7 +106,7 @@ async function gem(parts,schema,ui,opt){
       if(r.status===400&&/api key/i.test(lastMsg))throw new Error("Gemini API key tidak valid. Periksa lagi key-nya.");
       if(r.status===400&&ti<THINK.length-1){ti++;body=build();t--;continue}
       if(r.status===401||r.status===403)throw new Error("Gemini API key ditolak. Pastikan key-nya aktif.");
-      if(r.status===429||r.status>=500){busy=true;if(t===0){if(ui.retry)ui.retry("Gemini sibuk, mencoba lagi…");await sleep(2500)}continue}
+      if(r.status===429||r.status>=500){busy=true;if(t===0){if(ui.retry)ui.retry("Gemini sibuk, mencoba lagi…");await sleep(3000)}continue}
       if(r.status===404)break;
       throw new Error(lastMsg);
     }
@@ -125,25 +125,25 @@ async function api(action,body){
   if(action==="transcribe"){
     var file=body.file,lang=body.language;
     var hint=lang==="id"?"Bahasa ucapan: Indonesia. ":lang==="en"?"Bahasa ucapan: Inggris. ":"";
-    var prompt=hint+"Transkripsikan semua ucapan pada audio ini dalam bahasa aslinya. Bagi menjadi segmen pendek per kalimat atau gagasan (sekitar 3 sampai 15 detik). Untuk tiap segmen beri \"start\" dan \"end\" dalam format MM:SS (menit:detik dari awal audio) dan \"text\". Jangan menerjemahkan dan jangan mengarang. Jika audio berupa lagu atau ada bagian yang berulang, tulis tiap segmen satu kali sesuai waktunya, jangan mengulang tanpa henti, dan lewati bagian musik tanpa suara. Jika tidak ada ucapan, kembalikan daftar kosong.";
+    var prompt=hint+"Audio ini potongan dari rekaman yang lebih panjang, jadi bisa dimulai atau berakhir di tengah kalimat. Transkripsikan semua ucapan pada audio ini dalam bahasa aslinya. Bagi menjadi segmen pendek per kalimat atau gagasan (sekitar 3 sampai 15 detik). Untuk tiap segmen beri \"start\" dan \"end\" dalam format MM:SS (menit:detik dari awal audio) dan \"text\". Jangan menerjemahkan dan jangan mengarang. Jika audio berupa lagu atau ada bagian yang berulang, tulis tiap segmen satu kali sesuai waktunya, jangan mengulang tanpa henti, dan lewati bagian musik tanpa suara. Jika tidak ada ucapan, kembalikan daftar kosong.";
     var schema={type:"OBJECT",properties:{segments:{type:"ARRAY",items:{type:"OBJECT",properties:{start:{type:"STRING"},end:{type:"STRING"},text:{type:"STRING"}},required:["start","end","text"]}}},required:["segments"]};
     var out=await gem([{text:prompt},{inline_data:{mime_type:"audio/wav",data:await b64(file)}}],schema,body.ui,{models:TR,max:8192,timeout:75000});
     return {segments:(out.segments||[]).map(function(x){return{start:toSec(x.start),end:toSec(x.end),text:String(x.text||"").trim()}}).filter(function(x){return isFinite(x.start)&&isFinite(x.end)&&x.end>=x.start&&x.text})};
   }
-  var segs=body.segments,count=body.count||5,minSec=body.minSec||20,maxSec=body.maxSec||60,style=body.style,duration=body.duration||0;
+  var LEAD=1,segs=body.segments,count=body.count||5,minSec=body.minSec||20,maxSec=body.maxSec||60,style=body.style,duration=body.duration||0;
   if(!segs||!segs.length)throw new Error("Transkrip kosong. Tidak ada ucapan yang terdeteksi.");
-  var tr=segs.map(function(x){return"["+Number(x.start).toFixed(1)+"-"+Number(x.end).toFixed(1)+"] "+x.text}).join("\n");
+  var tr=segs.map(function(x){return"["+Math.round(x.start)+"-"+Math.round(x.end)+"] "+x.text}).join("\n");
   var goal=style==="menarik"?"momen paling menarik, lucu, mengejutkan, atau emosional yang cocok jadi video pendek TikTok":"poin-poin paling penting dan paling berisi informasi";
   var p2="Kamu editor video. Dari transkrip berstempel waktu (detik), pilih bagian untuk dipotong jadi klip pendek. start dan end dalam detik (angka), mengikuti batas kalimat pada transkrip. Klip tidak boleh saling tumpang tindih. title maksimal 8 kata, reason satu kalimat singkat, keduanya dalam bahasa yang sama dengan transkrip.\n\nPilih maksimal "+count+" klip berisi "+goal+". Durasi tiap klip antara "+minSec+" dan "+maxSec+" detik. Mulai klip di awal gagasan dan akhiri setelah gagasan selesai.\n\nTranskrip:\n"+tr;
   var sc2={type:"OBJECT",properties:{clips:{type:"ARRAY",items:{type:"OBJECT",properties:{start:{type:"NUMBER"},end:{type:"NUMBER"},title:{type:"STRING"},reason:{type:"STRING"}},required:["start","end","title","reason"]}}},required:["clips"]};
-  var res=await gem([{text:p2}],sc2,body.ui,{timeout:60000}),mx=Number(duration)||Infinity;
-  var clips=(res.clips||[]).map(function(c){return{start:Math.max(0,Number(c.start)),end:Math.min(mx,Number(c.end)),title:String(c.title||"Klip"),reason:String(c.reason||"")}}).filter(function(c){return isFinite(c.start)&&isFinite(c.end)&&c.end-c.start>=3}).sort(function(a,b){return a.start-b.start}).slice(0,count);
+  var res=await gem([{text:p2}],sc2,body.ui,{timeout:120000}),mx=Number(duration)||Infinity;
+  var clips=(res.clips||[]).map(function(c){return{start:Math.max(0,Number(c.start)-LEAD),end:Math.min(mx,Number(c.end)),title:String(c.title||"Klip"),reason:String(c.reason||"")}}).filter(function(c){return isFinite(c.start)&&isFinite(c.end)&&c.end-c.start>=3}).sort(function(a,b){return a.start-b.start}).slice(0,count);
   return {clips:clips};
 }
-function wav(f){var n=f.length,b=new ArrayBuffer(44+n*2),d=new DataView(b);
+function wav(f,sr){var n=f.length,b=new ArrayBuffer(44+n*2),d=new DataView(b);
   function w(o,t){for(var i=0;i<t.length;i++)d.setUint8(o+i,t.charCodeAt(i))}
-  w(0,"RIFF");d.setUint32(4,36+n*2,true);w(8,"WAVEfmt ");d.setUint32(16,16,true);d.setUint16(20,1,true);d.setUint16(22,1,true);d.setUint32(24,16000,true);d.setUint32(28,32000,true);d.setUint16(32,2,true);d.setUint16(34,16,true);w(36,"data");d.setUint32(40,n*2,true);
-  for(var i=0;i<n;i++){var x=Math.max(-1,Math.min(1,f[i]));d.setInt16(44+i*2,x<0?x*32768:x*32767,true)}
+  w(0,"RIFF");d.setUint32(4,36+n*2,true);w(8,"WAVEfmt ");d.setUint32(16,16,true);d.setUint16(20,1,true);d.setUint16(22,1,true);d.setUint32(24,sr,true);d.setUint32(28,sr*2,true);d.setUint16(32,2,true);d.setUint16(34,16,true);w(36,"data");d.setUint32(40,n*2,true);
+  new Int16Array(b,44,n).set(f);
   return new Blob([b],{type:"audio/wav"});}
 var steps=[],t0=0,raf=0,tick=0,lastPc=0;
 function addStep(label,w,note){var s={label:label,w:w,p:0,note:note||"",st:"",sub:false};steps.push(s);return s}
@@ -164,16 +164,28 @@ function begin(){steps=[];lastPc=0;t0=Date.now();$("bar").style.display="block";
 function finish(ok){clearInterval(tick);draw();if(ok)setTimeout(function(){if(!busy){$("bar").style.display="none";$("pl").style.display="none";$("steps").style.display="none"}},1500)}
 function creep(s,lo,hi,tau){var a=Date.now();s.st="on";var iv=setInterval(function(){s.p=Math.max(s.p,lo+(hi-lo)*(1-Math.exp(-(Date.now()-a)/tau)));draw()},250);return function(){clearInterval(iv)}}
 function readBuf(file,onp){return new Promise(function(res,rej){var r=new FileReader();r.onprogress=function(e){if(e.lengthComputable)onp(e.loaded/e.total)};r.onload=function(){res(r.result)};r.onerror=function(){rej(new Error("Gagal membaca file video."))};r.readAsArrayBuffer(file)})}
+var ASR=12000;
 async function prepAudio(file,s1,s2,s3){
   s1.st="on";var buf=await readBuf(file,function(f){s1.p=f;draw()});fin(s1,"");
-  var ac=new (window.AudioContext||window.webkitAudioContext)(),mb=file.size/1048576,dec,stop=creep(s2,0,.95,Math.max(1500,mb*60));
+  var AC=window.AudioContext||window.webkitAudioContext,ac;
+  try{ac=new AC({sampleRate:ASR})}catch(e){ac=new AC()}
+  var mb=file.size/1048576,dec,stop=creep(s2,0,.95,Math.max(1500,mb*40));
   try{dec=await ac.decodeAudioData(buf)}catch(e){stop();ac.close();throw new Error("Audio pada video ini tidak bisa dibaca browser.")}
-  stop();ac.close();fin(s2,"");
-  var off=new OfflineAudioContext(1,Math.ceil(dec.duration*16000),16000),bs=off.createBufferSource();
-  bs.buffer=dec;bs.connect(off.destination);bs.start();
-  stop=creep(s3,0,.95,Math.max(800,dec.duration*8));
-  var pcm=(await off.startRendering()).getChannelData(0);stop();fin(s3,"");
-  return pcm;
+  buf=null;stop();ac.close();fin(s2,"");
+  if(dec.sampleRate!==ASR){
+    var off=new OfflineAudioContext(dec.numberOfChannels,Math.ceil(dec.duration*ASR),ASR),bs=off.createBufferSource();
+    bs.buffer=dec;bs.connect(off.destination);bs.start();
+    stop=creep(s3,0,.95,Math.max(800,dec.duration*8));
+    dec=await off.startRendering();stop();
+  }
+  var ch=dec.numberOfChannels,n=dec.length,out=new Int16Array(n),chs=[],c,i,x;
+  for(c=0;c<ch;c++)chs.push(dec.getChannelData(c));
+  for(i=0;i<n;i++){
+    x=0;for(c=0;c<ch;c++)x+=chs[c][i];x/=ch;
+    x=x<-1?-1:x>1?1:x;out[i]=x<0?x*32768:x*32767;
+  }
+  fin(s3,"");
+  return out;
 }
 $("f").onchange=function(){
   var f=this.files&&this.files[0];if(!f)return;
@@ -186,21 +198,21 @@ v.addEventListener("timeupdate",function(){if(stopAt!==null&&v.currentTime>=stop
 $("go").onclick=async function(){
   if(busy)return;var file=$("f").files[0];if(!file)return;
   var mn=+$("mn").value||20,mx=+$("mx").value||60;if(mx<=mn){msg("Durasi maksimal harus lebih besar dari minimal.",true);return}
-  var CH=180,PAR=3,ok=false;
+  var CHMAX=150,CHMIN=30,OV=2.5,PAR=6,ok=false;
   busy=true;$("go").disabled=true;$("list").innerHTML="";begin();
   var sR=addStep("Membaca file video",.03),sD=addStep("Mengekstrak & mendekode audio",.10),sS=addStep("Mengubah ke audio 16 kHz",.05),sT=addStep("Menyalin ucapan jadi teks",.65),sH=addStep("AI memilih poin penting",.17,"menunggu");
   draw();
   try{
     msg("Membaca & menyiapkan audio…");
-    var pcm=await prepAudio(file,sR,sD,sS),SR=16000,len=pcm.length/SR,n=Math.max(1,Math.ceil(len/CH));
+    var pcm=await prepAudio(file,sR,sD,sS),SR=ASR,len=pcm.length/SR,n=Math.max(Math.ceil(len/CHMAX),Math.min(PAR,Math.ceil(len/CHMIN)),1),CH=len/n;
     var subs=[];
-    for(var k=0;k<n;k++)subs.push({label:"Bagian "+(k+1)+" ("+fmt(k*CH)+"–"+fmt(Math.min(len,(k+1)*CH))+")",w:0,p:0,note:"menunggu",st:"",sub:true});
+    for(var k=0;k<n;k++)subs.push({label:"Bagian "+(k+1)+" ("+fmt(k*CH)+"–"+fmt((k+1)*CH)+")",w:0,p:0,note:"menunggu",st:"",sub:true});
     steps.splice.apply(steps,[steps.indexOf(sT)+1,0].concat(subs));
     sT.st="on";msg("Menyalin ucapan jadi teks (maks. "+PAR+" bagian bersamaan)…");draw();
     var res=new Array(n),next=0,fail=false;
     function updT(){var a=0,dn=0;subs.forEach(function(c){a+=c.p;if(c.p>=1)dn++});sT.p=a/n;sT.note=dn+" dari "+n+" bagian selesai"}
     var one=async function(i){
-      var c=subs[i],waiting=false,iv=0,ta=0,tau=Math.max(5000,Math.min(CH,len-i*CH)*90);
+      var c=subs[i],waiting=false,iv=0,ta=0,tau=Math.max(4000,CH*90);
       function stop(){clearInterval(iv);iv=0}
       c.st="on";c.p=.02;c.note="menyiapkan audio…";updT();draw();
       var ui={
@@ -213,10 +225,12 @@ $("go").onclick=async function(){
         },
         retry:function(m){stop();waiting=false;c.note=m;draw()}
       };
-      var blob=wav(pcm.subarray(i*CH*SR,Math.min(pcm.length,(i+1)*CH*SR))),d;
+      var cs=i*CH,ce=(i+1)*CH,from=Math.max(0,Math.floor((cs-OV)*SR)),to=Math.min(pcm.length,Math.ceil((ce+OV)*SR)),lead=from/SR;
+      var blob=wav(pcm.subarray(from,to),SR),d;
       try{d=await api("transcribe",{file:blob,language:$("lg").value,ui:ui})}catch(e){stop();c.st="er";c.note="gagal";draw();throw e}
-      stop();fin(c,d.segments.length+" segmen");
-      res[i]=d.segments.map(function(x){return{start:x.start+i*CH,end:x.end+i*CH,text:x.text}});updT();draw();
+      stop();
+      res[i]=d.segments.map(function(x){return{start:x.start+lead,end:x.end+lead,text:x.text}}).filter(function(x){return x.start>=cs-0.5&&(i===n-1||x.start<ce-0.5)});
+      fin(c,res[i].length+" segmen");updT();draw();
     };
     var worker=async function(){while(!fail){var i=next++;if(i>=n)return;try{await one(i)}catch(e){fail=true;throw e}}};
     var ws=[];for(var w=0;w<Math.min(PAR,n);w++)ws.push(worker());
