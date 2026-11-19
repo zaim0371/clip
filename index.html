@@ -57,6 +57,7 @@ summary{cursor:pointer;font-weight:700}
     <div><label for="lg">Bahasa video</label><select id="lg"><option value="">Otomatis</option><option value="id">Indonesia</option><option value="en">Inggris</option></select></div>
   </div>
   <button id="go">Cari poin penting</button>
+  <button id="rt" class="g" hidden style="margin-left:8px"></button>
   <div class="bar" id="bar"><i id="pg"></i></div>
   <div class="pl" id="pl" aria-hidden="true"><b id="pn">0%</b><span id="el"></span></div>
   <p class="msg" id="msg" role="status"></p>
@@ -195,58 +196,89 @@ $("f").onchange=function(){
   v.onerror=function(){msg("Video ini tidak bisa dibuka di browser.",true)};
 };
 v.addEventListener("timeupdate",function(){if(stopAt!==null&&v.currentTime>=stopAt){v.pause();stopAt=null}});
+var job=null,rt=$("rt");
+function showRetry(label,fn){rt.textContent=label;rt.hidden=false;rt.onclick=function(){if(busy)return;rt.hidden=true;fn()}}
+function isFatal(e){return /API key|Isi Gemini/i.test((e&&e.message)||"")}
+function updT(){var J=job,a=0,dn=0;J.subs.forEach(function(c){a+=c.p;if(c.p>=1)dn++});J.sT.p=a/J.n;J.sT.note=dn+" dari "+J.n+" bagian selesai"}
+async function runParts(idx){
+  var J=job,next=0,stopAll=false,SR=J.SR,pcm=J.pcm;
+  var one=async function(i){
+    var c=J.subs[i],waiting=false,iv=0,ta=0,tau=Math.max(4000,J.CH*90);
+    function stop(){clearInterval(iv);iv=0}
+    c.st="on";c.p=.02;c.note="menyiapkan audio…";updT();draw();
+    var ui={
+      start:function(){stop();waiting=false;c.note="mengunggah audio…";draw()},
+      up:function(f){
+        c.p=Math.max(c.p,.05+.4*f);
+        if(f>=1&&!waiting){waiting=true;ta=Date.now();c.note="AI menyalin ucapan…";iv=setInterval(function(){c.p=Math.max(c.p,.45+.52*(1-Math.exp(-(Date.now()-ta)/tau)));c.note="AI menyalin ucapan… "+fmt((Date.now()-ta)/1000);updT();draw()},500)}
+        else if(!waiting)c.note="mengunggah audio "+Math.round(f*100)+"%";
+        updT();draw();
+      },
+      retry:function(m){stop();waiting=false;c.note=m;draw()}
+    };
+    var cs=i*J.CH,ce=(i+1)*J.CH,from=Math.max(0,Math.floor((cs-J.OV)*SR)),to=Math.min(pcm.length,Math.ceil((ce+J.OV)*SR)),lead=from/SR;
+    var blob=wav(pcm.subarray(from,to),SR),d;
+    try{d=await api("transcribe",{file:blob,language:$("lg").value,ui:ui})}catch(e){stop();c.st="er";c.note="gagal, bisa diulang";draw();throw e}
+    stop();
+    J.res[i]=d.segments.map(function(x){return{start:x.start+lead,end:x.end+lead,text:x.text}}).filter(function(x){return x.start>=cs-0.5&&(i===J.n-1||x.start<ce-0.5)});
+    fin(c,J.res[i].length+" segmen");updT();draw();
+  };
+  var worker=async function(){while(!stopAll){var k=next++;if(k>=idx.length)return;try{await one(idx[k])}catch(e){if(isFatal(e)){J.fatal=e;stopAll=true}}}};
+  var ws=[];for(var w=0;w<Math.min(J.PAR,idx.length);w++)ws.push(worker());
+  await Promise.all(ws);
+}
+function idle(ok){busy=false;$("go").disabled=false;finish(ok)}
+async function stageT(idx){
+  var J=job;busy=true;$("go").disabled=true;rt.hidden=true;J.fatal=null;
+  J.sT.st="on";clearInterval(tick);tick=setInterval(draw,500);
+  msg("Menyalin ucapan jadi teks (maks. "+Math.min(J.PAR,idx.length)+" bagian bersamaan)…");draw();
+  await runParts(idx);
+  var bad=[];for(var i=0;i<J.n;i++)if(!J.res[i])bad.push(i);
+  if(bad.length){
+    J.sT.st="er";J.PAR=Math.max(2,Math.floor(J.PAR/2));
+    msg(J.fatal?J.fatal.message:bad.length+" dari "+J.n+" bagian gagal (biasanya Gemini sedang sibuk atau kuota habis). Bagian lain sudah aman, tinggal ulangi yang gagal.",true);
+    idle(false);
+    showRetry("Ulangi "+bad.length+" bagian yang gagal",function(){
+      bad.forEach(function(i){var c=J.subs[i];c.p=0;c.st="";c.note="menunggu"});
+      J.sT.st="on";stageT(bad);
+    });
+    return;
+  }
+  await stageH();
+}
+async function stageH(){
+  var J=job;busy=true;$("go").disabled=true;rt.hidden=true;
+  clearInterval(tick);tick=setInterval(draw,500);
+  var segs=[].concat.apply([],J.res);fin(J.sT,segs.length+" segmen teks");
+  J.sH.p=0;J.sH.st="";
+  msg("AI memilih poin penting…");J.sH.note="AI membaca transkrip…";var stopH=creep(J.sH,0,.95,8000),r;
+  try{r=await api("highlights",{segments:segs,count:+$("n").value,minSec:J.mn,maxSec:J.mx,style:$("st").value,duration:dur,ui:{retry:function(m){J.sH.note=m;draw()}}})}
+  catch(e){stopH();J.sH.st="er";msg(e.message||"Gagal memilih poin penting.",true);idle(false);showRetry("Ulangi cari poin penting",stageH);return}
+  stopH();fin(J.sH,r.clips.length+" klip");
+  if(!r.clips.length)msg("AI tidak menemukan klip yang cocok. Coba ubah durasi atau gaya.",true);
+  else{$("list").innerHTML="";msg("Ditemukan "+r.clips.length+" klip. Tonton dulu, atur waktunya bila perlu, lalu potong.");r.clips.forEach(card)}
+  idle(true);
+}
 $("go").onclick=async function(){
   if(busy)return;var file=$("f").files[0];if(!file)return;
   var mn=+$("mn").value||20,mx=+$("mx").value||60;if(mx<=mn){msg("Durasi maksimal harus lebih besar dari minimal.",true);return}
-  var CHMAX=150,CHMIN=30,OV=2.5,PAR=6,ok=false;
-  busy=true;$("go").disabled=true;$("list").innerHTML="";begin();
-  var sR=addStep("Membaca file video",.03),sD=addStep("Mengekstrak & mendekode audio",.10),sS=addStep("Mengubah ke audio 16 kHz",.05),sT=addStep("Menyalin ucapan jadi teks",.65),sH=addStep("AI memilih poin penting",.17,"menunggu");
+  var CHMAX=150,CHMIN=30,PAR=6;
+  busy=true;$("go").disabled=true;rt.hidden=true;$("list").innerHTML="";job=null;begin();
+  var sR=addStep("Membaca file video",.03),sD=addStep("Mengekstrak & mendekode audio",.10),sS=addStep("Menyesuaikan audio",.05),sT=addStep("Menyalin ucapan jadi teks",.65),sH=addStep("AI memilih poin penting",.17,"menunggu");
   draw();
   try{
     msg("Membaca & menyiapkan audio…");
-    var pcm=await prepAudio(file,sR,sD,sS),SR=ASR,len=pcm.length/SR,n=Math.max(Math.ceil(len/CHMAX),Math.min(PAR,Math.ceil(len/CHMIN)),1),CH=len/n;
+    var pcm=await prepAudio(file,sR,sD,sS),len=pcm.length/ASR,n=Math.max(Math.ceil(len/CHMAX),Math.min(PAR,Math.ceil(len/CHMIN)),1),CH=len/n;
     var subs=[];
     for(var k=0;k<n;k++)subs.push({label:"Bagian "+(k+1)+" ("+fmt(k*CH)+"–"+fmt((k+1)*CH)+")",w:0,p:0,note:"menunggu",st:"",sub:true});
     steps.splice.apply(steps,[steps.indexOf(sT)+1,0].concat(subs));
-    sT.st="on";msg("Menyalin ucapan jadi teks (maks. "+PAR+" bagian bersamaan)…");draw();
-    var res=new Array(n),next=0,fail=false;
-    function updT(){var a=0,dn=0;subs.forEach(function(c){a+=c.p;if(c.p>=1)dn++});sT.p=a/n;sT.note=dn+" dari "+n+" bagian selesai"}
-    var one=async function(i){
-      var c=subs[i],waiting=false,iv=0,ta=0,tau=Math.max(4000,CH*90);
-      function stop(){clearInterval(iv);iv=0}
-      c.st="on";c.p=.02;c.note="menyiapkan audio…";updT();draw();
-      var ui={
-        start:function(){stop();waiting=false;c.note="mengunggah audio…";draw()},
-        up:function(f){
-          c.p=Math.max(c.p,.05+.4*f);
-          if(f>=1&&!waiting){waiting=true;ta=Date.now();c.note="AI menyalin ucapan…";iv=setInterval(function(){c.p=Math.max(c.p,.45+.52*(1-Math.exp(-(Date.now()-ta)/tau)));c.note="AI menyalin ucapan… "+fmt((Date.now()-ta)/1000);updT();draw()},500)}
-          else if(!waiting)c.note="mengunggah audio "+Math.round(f*100)+"%";
-          updT();draw();
-        },
-        retry:function(m){stop();waiting=false;c.note=m;draw()}
-      };
-      var cs=i*CH,ce=(i+1)*CH,from=Math.max(0,Math.floor((cs-OV)*SR)),to=Math.min(pcm.length,Math.ceil((ce+OV)*SR)),lead=from/SR;
-      var blob=wav(pcm.subarray(from,to),SR),d;
-      try{d=await api("transcribe",{file:blob,language:$("lg").value,ui:ui})}catch(e){stop();c.st="er";c.note="gagal";draw();throw e}
-      stop();
-      res[i]=d.segments.map(function(x){return{start:x.start+lead,end:x.end+lead,text:x.text}}).filter(function(x){return x.start>=cs-0.5&&(i===n-1||x.start<ce-0.5)});
-      fin(c,res[i].length+" segmen");updT();draw();
-    };
-    var worker=async function(){while(!fail){var i=next++;if(i>=n)return;try{await one(i)}catch(e){fail=true;throw e}}};
-    var ws=[];for(var w=0;w<Math.min(PAR,n);w++)ws.push(worker());
-    await Promise.all(ws);
-    var segs=[].concat.apply([],res);fin(sT,segs.length+" segmen teks");
-    msg("AI memilih poin penting…");sH.note="AI membaca transkrip…";var stopH=creep(sH,0,.95,8000),r;
-    try{r=await api("highlights",{segments:segs,count:+$("n").value,minSec:mn,maxSec:mx,style:$("st").value,duration:dur,ui:{retry:function(m){sH.note=m;draw()}}})}
-    catch(e){stopH();sH.st="er";throw e}
-    stopH();fin(sH,r.clips.length+" klip");ok=true;
-    if(!r.clips.length)msg("AI tidak menemukan klip yang cocok. Coba ubah durasi atau gaya.",true);
-    else{msg("Ditemukan "+r.clips.length+" klip. Tonton dulu, atur waktunya bila perlu, lalu potong.");r.clips.forEach(card)}
+    job={pcm:pcm,SR:ASR,len:len,n:n,CH:CH,OV:2.5,PAR:PAR,subs:subs,res:new Array(n),sT:sT,sH:sH,mn:mn,mx:mx,fatal:null};
   }catch(e){
     steps.forEach(function(s){if(s.st==="on"&&s.p<1)s.st="er"});
-    msg(e.message||"Gagal memproses.",true);
+    msg(e.message||"Gagal memproses.",true);idle(false);return;
   }
-  busy=false;$("go").disabled=false;finish(ok);
+  var all=[];for(var i=0;i<job.n;i++)all.push(i);
+  await stageT(all);
 };
 function wait(el,ev,ms){return new Promise(function(r){var d=false;function f(){if(!d){d=true;r()}}el.addEventListener(ev,f,{once:true});setTimeout(f,ms)})}
 async function cutRange(a,b,onp){
