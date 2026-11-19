@@ -36,6 +36,11 @@ summary{cursor:pointer;font-weight:700}
 <p class="sub">Unggah video, AI mencari poin pentingnya, lalu kamu tonton, potong, dan bagikan ke TikTok.</p>
 
 
+<section class="card">
+  <label for="gk">Gemini API key</label><input id="gk" type="password" autocomplete="off" placeholder="AIza...">
+  <p class="hint">Isi sekali saja. Tersimpan hanya di browser ini, tidak dikirim ke server lain. Buat di aistudio.google.com/apikey</p>
+</section>
+
 <input id="f" type="file" accept="video/*" aria-label="Pilih video">
 <video id="v" controls playsinline hidden></video>
 
@@ -57,15 +62,48 @@ summary{cursor:pointer;font-weight:700}
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)},v=$("v"),dur=0,src=null,busy=false,stopAt=null;
-var SB_URL="https://ypdtaoccfxzquyfsiloy.supabase.co";
+var GM="gemini-3.6-flash",KEY="autoclip:gk";
+try{$("gk").value=localStorage.getItem(KEY)||""}catch(e){}
+$("gk").oninput=function(){try{localStorage.setItem(KEY,$("gk").value.trim())}catch(e){}};
 function fmt(n){n=Math.max(0,Math.round(n));var h=Math.floor(n/3600),m=Math.floor(n%3600/60),s=n%60;return (h?h+":"+String(m).padStart(2,"0"):m)+":"+String(s).padStart(2,"0")}
 function msg(t,e){$("msg").textContent=t||"";$("msg").className="msg"+(e?" e":"")}
-function hdr(j){var h={};if(j)h["Content-Type"]="application/json";return h}
-async function api(action,body,form){
-  var u=SB_URL;
-  var r;try{r=await fetch(u+"/functions/v1/auto-clip?action="+action,{method:"POST",headers:hdr(!form),body:form?body:JSON.stringify(body)})}catch(e){throw new Error("Tidak bisa terhubung ke server. Pastikan function auto-clip sudah di-deploy dengan Verify JWT dimatikan, lalu coba lagi.")}
+function toSec(v){if(typeof v==="number")return v;var p=String(v==null?"":v).trim().split(":").map(Number);if(!p.length||p.some(function(x){return !isFinite(x)}))return NaN;return p.reduce(function(a,x){return a*60+x},0)}
+function b64(blob){return new Promise(function(res,rej){var r=new FileReader();r.onload=function(){res(String(r.result).split(",")[1])};r.onerror=function(){rej(new Error("Gagal membaca audio."))};r.readAsDataURL(blob)})}
+async function gem(parts,schema){
+  var key=$("gk").value.trim();if(!key)throw new Error("Isi Gemini API key dulu di bagian atas.");
+  var r;
+  try{r=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+GM+":generateContent",{method:"POST",headers:{"x-goog-api-key":key,"content-type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:parts}],generationConfig:{responseMimeType:"application/json",responseSchema:schema,temperature:0.2}})})}
+  catch(e){throw new Error("Tidak bisa terhubung ke Gemini. Cek koneksi internetmu.")}
   var d=await r.json().catch(function(){return{}});
-  if(!r.ok)throw new Error(d.error||"Server error "+r.status);return d;
+  if(!r.ok){
+    var m=(d.error&&d.error.message)||("Gemini error "+r.status);
+    if(r.status===429)throw new Error("Kuota Gemini habis atau terlalu cepat. Tunggu sebentar lalu coba lagi.");
+    if(r.status===400&&/api key/i.test(m))throw new Error("Gemini API key tidak valid. Periksa lagi key-nya.");
+    if(r.status===403)throw new Error("Gemini API key ditolak. Pastikan key-nya aktif.");
+    throw new Error(m);
+  }
+  var c=d.candidates&&d.candidates[0],t=((c&&c.content&&c.content.parts)||[]).map(function(p){return p.text||""}).join("");
+  if(!t)throw new Error("Gemini tidak memberi jawaban. Coba lagi.");
+  try{return JSON.parse(t.replace(/```json|```/g,"").trim())}catch(e){throw new Error("Jawaban AI tidak terbaca. Coba lagi.")}
+}
+async function api(action,body){
+  if(action==="transcribe"){
+    var file=body.get("file"),lang=body.get("language");
+    var hint=lang==="id"?"Bahasa ucapan: Indonesia. ":lang==="en"?"Bahasa ucapan: Inggris. ":"";
+    var prompt=hint+"Transkripsikan semua ucapan pada audio ini dalam bahasa aslinya. Bagi menjadi segmen pendek per kalimat atau gagasan (sekitar 3 sampai 15 detik). Untuk tiap segmen beri \"start\" dan \"end\" dalam format MM:SS (menit:detik dari awal audio) dan \"text\". Jangan menerjemahkan dan jangan mengarang. Jika tidak ada ucapan, kembalikan daftar kosong.";
+    var schema={type:"OBJECT",properties:{segments:{type:"ARRAY",items:{type:"OBJECT",properties:{start:{type:"STRING"},end:{type:"STRING"},text:{type:"STRING"}},required:["start","end","text"]}}},required:["segments"]};
+    var out=await gem([{text:prompt},{inline_data:{mime_type:"audio/wav",data:await b64(file)}}],schema);
+    return {segments:(out.segments||[]).map(function(x){return{start:toSec(x.start),end:toSec(x.end),text:String(x.text||"").trim()}}).filter(function(x){return isFinite(x.start)&&isFinite(x.end)&&x.end>=x.start&&x.text})};
+  }
+  var segs=body.segments,count=body.count||5,minSec=body.minSec||20,maxSec=body.maxSec||60,style=body.style,duration=body.duration||0;
+  if(!segs||!segs.length)throw new Error("Transkrip kosong. Tidak ada ucapan yang terdeteksi.");
+  var tr=segs.map(function(x){return"["+Number(x.start).toFixed(1)+"-"+Number(x.end).toFixed(1)+"] "+x.text}).join("\n");
+  var goal=style==="menarik"?"momen paling menarik, lucu, mengejutkan, atau emosional yang cocok jadi video pendek TikTok":"poin-poin paling penting dan paling berisi informasi";
+  var p2="Kamu editor video. Dari transkrip berstempel waktu (detik), pilih bagian untuk dipotong jadi klip pendek. start dan end dalam detik (angka), mengikuti batas kalimat pada transkrip. Klip tidak boleh saling tumpang tindih. title maksimal 8 kata, reason satu kalimat singkat, keduanya dalam bahasa yang sama dengan transkrip.\n\nPilih maksimal "+count+" klip berisi "+goal+". Durasi tiap klip antara "+minSec+" dan "+maxSec+" detik. Mulai klip di awal gagasan dan akhiri setelah gagasan selesai.\n\nTranskrip:\n"+tr;
+  var sc2={type:"OBJECT",properties:{clips:{type:"ARRAY",items:{type:"OBJECT",properties:{start:{type:"NUMBER"},end:{type:"NUMBER"},title:{type:"STRING"},reason:{type:"STRING"}},required:["start","end","title","reason"]}}},required:["clips"]};
+  var res=await gem([{text:p2}],sc2),mx=Number(duration)||Infinity;
+  var clips=(res.clips||[]).map(function(c){return{start:Math.max(0,Number(c.start)),end:Math.min(mx,Number(c.end)),title:String(c.title||"Klip"),reason:String(c.reason||"")}}).filter(function(c){return isFinite(c.start)&&isFinite(c.end)&&c.end-c.start>=3}).sort(function(a,b){return a.start-b.start}).slice(0,count);
+  return {clips:clips};
 }
 function wav(f){var n=f.length,b=new ArrayBuffer(44+n*2),d=new DataView(b);
   function w(o,t){for(var i=0;i<t.length;i++)d.setUint8(o+i,t.charCodeAt(i))}
