@@ -101,7 +101,7 @@ async function gem(parts,schema,ui){
       var j=r.j;
       if(r.ok){d=j;break}
       lastMsg=(j.error&&j.error.message)||("Gemini error "+r.status);
-      if(r.status===400&&think&&/think/i.test(lastMsg)){think=false;body=build();t--;continue}
+      if(r.status===400&&think&&!/api key/i.test(lastMsg)){think=false;body=build();t--;continue}
       if(r.status===400&&/api key/i.test(lastMsg))throw new Error("Gemini API key tidak valid. Periksa lagi key-nya.");
       if(r.status===401||r.status===403)throw new Error("Gemini API key ditolak. Pastikan key-nya aktif.");
       if(r.status===429||r.status>=500){busy=true;if(t===0){if(ui.retry)ui.retry("Gemini sibuk, mencoba lagi…");await sleep(2500)}continue}
