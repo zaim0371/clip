@@ -57,10 +57,10 @@ summary{cursor:pointer;font-weight:700}
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)},v=$("v"),dur=0,src=null,busy=false,stopAt=null;
-var SB_URL="https://sgidwhniyoxskrsuevcb.supabase.co",SB_KEY="sb_publishable_FTZd5Hwi4TOBlwFJ_85lDw_PLcxs28k";
+var SB_URL="https://ypdtaoccfxzquyfsiloy.supabase.co";
 function fmt(n){n=Math.max(0,Math.round(n));var h=Math.floor(n/3600),m=Math.floor(n%3600/60),s=n%60;return (h?h+":"+String(m).padStart(2,"0"):m)+":"+String(s).padStart(2,"0")}
 function msg(t,e){$("msg").textContent=t||"";$("msg").className="msg"+(e?" e":"")}
-function hdr(j){var h={apikey:SB_KEY};if(j)h["Content-Type"]="application/json";return h}
+function hdr(j){var h={};if(j)h["Content-Type"]="application/json";return h}
 async function api(action,body,form){
   var u=SB_URL;
   var r;try{r=await fetch(u+"/functions/v1/auto-clip?action="+action,{method:"POST",headers:hdr(!form),body:form?body:JSON.stringify(body)})}catch(e){throw new Error("Tidak bisa terhubung ke server. Pastikan function auto-clip sudah di-deploy dengan Verify JWT dimatikan, lalu coba lagi.")}
