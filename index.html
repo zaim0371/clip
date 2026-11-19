@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Auto Clip</title>
+<style>
+:root{--bg:#f3f6f5;--sf:#fff;--tx:#14262b;--mu:#5d7278;--ac:#0e6b6b;--ac2:#f2b01e;--bd:#d3dedc;--bt:#fff;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1a1d;--sf:#16272b;--tx:#e8f1ef;--mu:#8fa7ab;--ac:#4cc3bd;--bd:#2a4146;--bt:#062a2a}}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:640px;margin:0 auto;padding:max(20px,env(safe-area-inset-top)) 16px 48px}
+h1{font-size:1.9rem;line-height:1.1;margin:8px 0 4px;letter-spacing:-.02em}
+h2{font-size:1.05rem;margin:0 0 4px}
+.sub,.hint{color:var(--mu)}.sub{margin:0 0 18px}.hint{font-size:.85rem;margin:8px 0 0}
+input,select{width:100%;font:inherit;color:var(--tx);background:var(--bg);border:1.5px solid var(--bd);border-radius:10px;padding:10px 12px}
+input:focus-visible,select:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid var(--ac2);outline-offset:2px}
+button{font:inherit;font-weight:700;cursor:pointer;border:0;border-radius:10px;padding:11px 16px;background:var(--ac);color:var(--bt)}
+button.g{background:transparent;color:var(--tx);border:1.5px solid var(--bd)}
+button:disabled{opacity:.5;cursor:default}
+video{width:100%;max-height:50vh;background:#000;border-radius:12px;display:block;margin:12px 0}
+.card{background:var(--sf);border:1.5px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+label{display:block;font-size:.85rem;color:var(--mu);margin-bottom:3px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.bar{height:8px;background:var(--bd);border-radius:6px;overflow:hidden;margin-top:10px;display:none}
+.bar i{display:block;height:100%;width:0;background:var(--ac2)}
+.msg{min-height:1.3em;margin:8px 0 0;font-size:.9rem;color:var(--mu)}.msg.e{color:#c0392b}
+summary{cursor:pointer;font-weight:700}
+.out video{max-height:40vh}
+</style>
+</head>
+<body>
+<main>
+<h1>Auto Clip</h1>
+<p class="sub">Unggah video, AI mencari poin pentingnya, lalu kamu tonton, potong, dan bagikan ke TikTok.</p>
+
+<details class="card" id="setup">
+  <summary>Pengaturan server</summary>
+  <div style="margin-top:10px">
+    <label for="cu">Supabase Project URL</label><input id="cu" placeholder="https://xxxx.supabase.co" autocomplete="off">
+    <label for="ck" style="margin-top:8px">Supabase anon key</label><input id="ck" autocomplete="off">
+    <label for="cp" style="margin-top:8px">Password aplikasi</label><input id="cp" type="password" autocomplete="off">
+    <p class="hint">Tersimpan hanya di browser ini.</p>
+  </div>
+</details>
+
+<input id="f" type="file" accept="video/*" aria-label="Pilih video">
+<video id="v" controls playsinline hidden></video>
+
+<section class="card" id="opt" hidden>
+  <div class="g2">
+    <div><label for="n">Jumlah klip</label><select id="n"><option>3</option><option selected>5</option><option>8</option></select></div>
+    <div><label for="st">Cari yang</label><select id="st"><option value="penting">Poin penting</option><option value="menarik">Momen menarik</option></select></div>
+    <div><label for="mn">Durasi minimal (detik)</label><input id="mn" type="number" min="5" value="20" inputmode="numeric"></div>
+    <div><label for="mx">Durasi maksimal (detik)</label><input id="mx" type="number" min="10" value="60" inputmode="numeric"></div>
+    <div><label for="lg">Bahasa video</label><select id="lg"><option value="">Otomatis</option><option value="id">Indonesia</option><option value="en">Inggris</option></select></div>
+  </div>
+  <button id="go">Cari poin penting</button>
+  <div class="bar" id="bar"><i id="pg"></i></div>
+  <p class="msg" id="msg" role="status"></p>
+</section>
+
+<div id="list"></div>
+</main>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i)},v=$("v"),dur=0,src=null,busy=false,stopAt=null;
+var KEY="autoclip:cfg";
+try{var s=JSON.parse(localStorage.getItem(KEY)||"{}");$("cu").value=s.u||"";$("ck").value=s.k||"";$("cp").value=s.p||"";if(!s.u)$("setup").open=true}catch(e){$("setup").open=true}
+function saveCfg(){try{localStorage.setItem(KEY,JSON.stringify({u:$("cu").value.trim(),k:$("ck").value.trim(),p:$("cp").value}))}catch(e){}}
+["cu","ck","cp"].forEach(function(i){$(i).oninput=saveCfg});
+function fmt(n){n=Math.max(0,Math.round(n));var h=Math.floor(n/3600),m=Math.floor(n%3600/60),s=n%60;return (h?h+":"+String(m).padStart(2,"0"):m)+":"+String(s).padStart(2,"0")}
+function msg(t,e){$("msg").textContent=t||"";$("msg").className="msg"+(e?" e":"")}
+function hdr(j){var h={apikey:$("ck").value.trim(),Authorization:"Bearer "+$("ck").value.trim(),"x-app-password":$("cp").value};if(j)h["Content-Type"]="application/json";return h}
+async function api(action,body,form){
+  var u=$("cu").value.trim().replace(/\/$/,"");if(!u)throw new Error("Isi Supabase Project URL di Pengaturan server.");
+  var r=await fetch(u+"/functions/v1/auto-clip?action="+action,{method:"POST",headers:hdr(!form),body:form?body:JSON.stringify(body)});
+  var d=await r.json().catch(function(){return{}});
+  if(!r.ok)throw new Error(d.error||"Server error "+r.status);return d;
+}
+function wav(f){var n=f.length,b=new ArrayBuffer(44+n*2),d=new DataView(b);
+  function w(o,t){for(var i=0;i<t.length;i++)d.setUint8(o+i,t.charCodeAt(i))}
+  w(0,"RIFF");d.setUint32(4,36+n*2,true);w(8,"WAVEfmt ");d.setUint32(16,16,true);d.setUint16(20,1,true);d.setUint16(22,1,true);d.setUint32(24,16000,true);d.setUint32(28,32000,true);d.setUint16(32,2,true);d.setUint16(34,16,true);w(36,"data");d.setUint32(40,n*2,true);
+  for(var i=0;i<n;i++){var x=Math.max(-1,Math.min(1,f[i]));d.setInt16(44+i*2,x<0?x*32768:x*32767,true)}
+  return new Blob([b],{type:"audio/wav"});}
+async function audioChunks(file,sec){
+  var ac=new (window.AudioContext||window.webkitAudioContext)();
+  var dec=await ac.decodeAudioData(await file.arrayBuffer());ac.close();
+  var off=new OfflineAudioContext(1,Math.ceil(dec.duration*16000),16000),s=off.createBufferSource();
+  s.buffer=dec;s.connect(off.destination);s.start();
+  var pcm=(await off.startRendering()).getChannelData(0),out=[],step=sec*16000;
+  for(var i=0;i<pcm.length;i+=step)out.push({t:i/16000,blob:wav(pcm.subarray(i,Math.min(pcm.length,i+step)))});
+  return out;
+}
+$("f").onchange=function(){
+  var f=this.files&&this.files[0];if(!f)return;
+  if(src)URL.revokeObjectURL(src);
+  src=URL.createObjectURL(f);v.src=src;v.hidden=false;$("list").innerHTML="";msg("");
+  v.onloadedmetadata=function(){dur=v.duration||0;$("opt").hidden=false;msg("Panjang video "+fmt(dur)+".")};
+  v.onerror=function(){msg("Video ini tidak bisa dibuka di browser.",true)};
+};
+v.addEventListener("timeupdate",function(){if(stopAt!==null&&v.currentTime>=stopAt){v.pause();stopAt=null}});
+function prog(p){$("pg").style.width=Math.round(p*100)+"%"}
+$("go").onclick=async function(){
+  if(busy)return;var file=$("f").files[0];if(!file)return;
+  var mn=+$("mn").value||20,mx=+$("mx").value||60;if(mx<=mn){msg("Durasi maksimal harus lebih besar dari minimal.",true);return}
+  busy=true;$("go").disabled=true;$("bar").style.display="block";prog(0);$("list").innerHTML="";
+  try{
+    msg("1/3 Menyiapkan audio…");var ch=await audioChunks(file,300),segs=[];
+    for(var i=0;i<ch.length;i++){
+      msg("2/3 Menyalin ucapan menjadi teks ("+(i+1)+" dari "+ch.length+")…");prog(.2+.5*i/ch.length);
+      var fd=new FormData();fd.append("file",ch[i].blob,"a.wav");fd.append("language",$("lg").value);
+      var d=await api("transcribe",fd,true);
+      d.segments.forEach(function(x){segs.push({start:x.start+ch[i].t,end:x.end+ch[i].t,text:x.text})});
+    }
+    msg("3/3 AI memilih poin penting…");prog(.85);
+    var r=await api("highlights",{segments:segs,count:+$("n").value,minSec:mn,maxSec:mx,style:$("st").value,duration:dur});
+    prog(1);
+    if(!r.clips.length)msg("AI tidak menemukan klip yang cocok. Coba ubah durasi atau gaya.",true);
+    else{msg("Ditemukan "+r.clips.length+" klip. Tonton dulu, atur waktunya bila perlu, lalu potong.");r.clips.forEach(card)}
+  }catch(e){msg(e.message||"Gagal memproses.",true)}
+  busy=false;$("go").disabled=false;setTimeout(function(){$("bar").style.display="none"},800);
+};
+function wait(el,ev,ms){return new Promise(function(r){var d=false;function f(){if(!d){d=true;r()}}el.addEventListener(ev,f,{once:true});setTimeout(f,ms)})}
+async function cutRange(a,b,onp){
+  var cap=v.captureStream||v.mozCaptureStream;
+  if(!cap||typeof MediaRecorder==="undefined")throw new Error("Browser ini belum mendukung pemotongan. Coba buka di Chrome.");
+  stopAt=null;v.pause();v.currentTime=a;await wait(v,"seeked",3000);
+  var types=["video/mp4;codecs=avc1.42E01E,mp4a.40.2","video/mp4","video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"];
+  var mt=types.filter(function(x){return MediaRecorder.isTypeSupported(x)})[0];
+  var rec=new MediaRecorder(cap.call(v),mt?{mimeType:mt}:{}),chunks=[],stopped=false;
+  rec.ondataavailable=function(e){if(e.data&&e.data.size)chunks.push(e.data)};
+  var done=new Promise(function(r){rec.onstop=r});
+  rec.start(500);await v.play();
+  var iv=setInterval(function(){onp((v.currentTime-a)/(b-a));if(!stopped&&(v.currentTime>=b||v.ended)){stopped=true;clearInterval(iv);v.pause();rec.stop()}},100);
+  await done;clearInterval(iv);
+  var type=(rec.mimeType||"video/webm").split(";")[0],ext=type.indexOf("mp4")>-1?"mp4":"webm",blob=new Blob(chunks,{type:type});
+  return {blob:blob,file:new File([blob],"klip."+ext,{type:type}),ext:ext};
+}
+function card(c,i){
+  var d=document.createElement("div");d.className="card";
+  d.innerHTML='<h2></h2><p class="hint r" style="margin:0 0 4px"></p><div class="g2"><div><label>Mulai (detik)</label><input class="a" type="number" min="0" step="0.5"></div><div><label>Selesai (detik)</label><input class="b" type="number" min="0" step="0.5"></div></div><p class="hint dd" style="margin:0"></p><div class="row"><button class="g w">Tonton di video</button><button class="x">Potong klip ini</button></div><div class="bar"><i></i></div><p class="msg m"></p><div class="out"></div>';
+  var q=function(s){return d.querySelector(s)};
+  q("h2").textContent=(i+1)+". "+c.title;q(".r").textContent=c.reason;
+  q(".a").value=c.start.toFixed(1);q(".b").value=c.end.toFixed(1);
+  function t(){var a=+q(".a").value,b=+q(".b").value;q(".dd").textContent=b>a?"Durasi "+fmt(b-a)+" ("+fmt(a)+" sampai "+fmt(b)+")":"Waktu selesai harus setelah mulai";return b>a?{a:a,b:Math.min(b,dur||b)}:null}
+  q(".a").oninput=q(".b").oninput=t;t();
+  q(".w").onclick=function(){var r=t();if(!r)return;v.currentTime=r.a;stopAt=r.b;v.play();v.scrollIntoView({behavior:"smooth",block:"center"})};
+  q(".x").onclick=async function(){
+    if(busy)return;var r=t();if(!r)return;busy=true;var btn=this;btn.disabled=true;var bar=q(".bar");bar.style.display="block";q(".m").className="msg m";q(".m").textContent="Memotong… jangan tutup halaman ini.";
+    try{
+      var o=await cutRange(r.a,r.b,function(p){bar.firstChild.style.width=Math.min(100,Math.max(0,p*100))+"%"});
+      var out=q(".out");out.innerHTML="";var rv=document.createElement("video");rv.controls=true;rv.playsInline=true;rv.src=URL.createObjectURL(o.blob);out.appendChild(rv);
+      var sb=document.createElement("button");sb.textContent="Bagikan ke TikTok";out.appendChild(sb);
+      sb.onclick=function(){
+        var m=q(".m");m.className="msg m";
+        try{if(navigator.canShare&&navigator.canShare({files:[o.file]})){navigator.share({files:[o.file],title:c.title}).catch(function(e){if(e&&e.name!=="AbortError"){m.className="msg m e";m.textContent="Menu bagikan ditolak. Tahan lama videonya, simpan, lalu unggah dari aplikasi TikTok."}})}else{m.className="msg m e";m.textContent="Perangkat ini tidak bisa membagikan file langsung. Tahan lama videonya, simpan, lalu unggah dari aplikasi TikTok."}}catch(e){m.className="msg m e";m.textContent="Gagal membuka menu bagikan."}
+      };
+      q(".m").textContent="Selesai ("+o.ext.toUpperCase()+", "+(o.blob.size/1048576).toFixed(1)+" MB). Tonton hasilnya di bawah.";
+    }catch(e){q(".m").className="msg m e";q(".m").textContent=e.message||"Gagal memotong."}
+    busy=false;btn.disabled=false;bar.style.display="none";
+  };
+  $("list").appendChild(d);
+}
+})();
+</script>
+</body>
+</html>
