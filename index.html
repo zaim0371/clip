@@ -68,7 +68,7 @@ summary{cursor:pointer;font-weight:700}
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)},v=$("v"),dur=0,src=null,busy=false,stopAt=null;
-var MODELS=["gemini-3.6-flash","gemini-3.5-flash","gemini-3.5-flash-lite"],KEY="autoclip:gk";
+var MODELS=["gemini-3.6-flash","gemini-3.5-flash","gemini-3.5-flash-lite"],KEY="autoclip:gk",TR=["gemini-3.5-flash-lite","gemini-3.5-flash","gemini-3.6-flash"],THINK=[{thinkingLevel:"minimal"},{thinkingBudget:0},null];
 function sleep(ms){return new Promise(function(r){setTimeout(r,ms)})}
 try{$("gk").value=localStorage.getItem(KEY)||""}catch(e){}
 $("gk").oninput=function(){try{localStorage.setItem(KEY,$("gk").value.trim())}catch(e){}};
@@ -76,51 +76,58 @@ function fmt(n){n=Math.max(0,Math.round(n));var h=Math.floor(n/3600),m=Math.floo
 function msg(t,e){$("msg").textContent=t||"";$("msg").className="msg"+(e?" e":"")}
 function toSec(v){if(typeof v==="number")return v;var p=String(v==null?"":v).trim().split(":").map(Number);if(!p.length||p.some(function(x){return !isFinite(x)}))return NaN;return p.reduce(function(a,x){return a*60+x},0)}
 function b64(blob){return new Promise(function(res,rej){var r=new FileReader();r.onload=function(){res(String(r.result).split(",")[1])};r.onerror=function(){rej(new Error("Gagal membaca audio."))};r.readAsDataURL(blob)})}
-function post(url,key,body,onUp){
+function post(url,key,body,onUp,ms){
   return new Promise(function(res,rej){
-    var x=new XMLHttpRequest();x.open("POST",url);
+    var x=new XMLHttpRequest();x.open("POST",url);x.timeout=ms||90000;
     x.setRequestHeader("x-goog-api-key",key);x.setRequestHeader("content-type","application/json");
     if(onUp){x.upload.onprogress=function(e){if(e.lengthComputable)onUp(e.loaded/e.total)};x.upload.onload=function(){onUp(1)}}
     x.onload=function(){var j={};try{j=JSON.parse(x.responseText)}catch(e){}res({ok:x.status>=200&&x.status<300,status:x.status,j:j})};
+    x.ontimeout=function(){res({ok:false,status:0,timeout:true,j:{}})};
     x.onerror=function(){rej(new Error("net"))};
     x.send(body);
   });
 }
-async function gem(parts,schema,ui){
-  ui=ui||{};
+async function gem(parts,schema,ui,opt){
+  ui=ui||{};opt=opt||{};
   var key=$("gk").value.trim();if(!key)throw new Error("Isi Gemini API key dulu di bagian atas.");
-  var think=true;
-  function build(){var g={responseMimeType:"application/json",responseSchema:schema,temperature:0.2};if(think)g.thinkingConfig={thinkingBudget:0};return JSON.stringify({contents:[{role:"user",parts:parts}],generationConfig:g})}
-  var body=build(),d=null,lastMsg="",busy=false;
-  for(var mi=0;mi<MODELS.length&&!d;mi++){
+  var models=opt.models||MODELS,ti=0;
+  function build(){var g={responseMimeType:"application/json",responseSchema:schema,temperature:0.2,maxOutputTokens:opt.max||8192};if(THINK[ti])g.thinkingConfig=THINK[ti];return JSON.stringify({contents:[{role:"user",parts:parts}],generationConfig:g})}
+  var body=build(),d=null,lastMsg="",busy=false,slow=false;
+  for(var mi=0;mi<models.length&&!d;mi++){
     for(var t=0;t<2&&!d;t++){
       if(ui.start)ui.start();
       var r;
-      try{r=await post("https://generativelanguage.googleapis.com/v1beta/models/"+MODELS[mi]+":generateContent",key,body,ui.up)}
+      try{r=await post("https://generativelanguage.googleapis.com/v1beta/models/"+models[mi]+":generateContent",key,body,ui.up,opt.timeout)}
       catch(e){throw new Error("Tidak bisa terhubung ke Gemini. Cek koneksi internetmu.")}
+      if(r.timeout){slow=true;lastMsg="timeout";if(ui.retry)ui.retry("Terlalu lama, mencoba model lain…");break}
       var j=r.j;
       if(r.ok){d=j;break}
       lastMsg=(j.error&&j.error.message)||("Gemini error "+r.status);
-      if(r.status===400&&think&&!/api key/i.test(lastMsg)){think=false;body=build();t--;continue}
       if(r.status===400&&/api key/i.test(lastMsg))throw new Error("Gemini API key tidak valid. Periksa lagi key-nya.");
+      if(r.status===400&&ti<THINK.length-1){ti++;body=build();t--;continue}
       if(r.status===401||r.status===403)throw new Error("Gemini API key ditolak. Pastikan key-nya aktif.");
       if(r.status===429||r.status>=500){busy=true;if(t===0){if(ui.retry)ui.retry("Gemini sibuk, mencoba lagi…");await sleep(2500)}continue}
       if(r.status===404)break;
       throw new Error(lastMsg);
     }
   }
-  if(!d)throw new Error(busy?"Gemini sedang terlalu sibuk atau kuotanya habis. Tunggu beberapa menit lalu coba lagi.":lastMsg);
+  if(!d)throw new Error(busy?"Gemini sedang terlalu sibuk atau kuotanya habis. Tunggu beberapa menit lalu coba lagi.":slow?"Gemini terlalu lama merespons. Coba lagi sebentar lagi.":lastMsg);
   var c=d.candidates&&d.candidates[0],tx=((c&&c.content&&c.content.parts)||[]).map(function(p){return p.text||""}).join("");
   if(!tx)throw new Error("Gemini tidak memberi jawaban. Coba lagi.");
-  try{return JSON.parse(tx.replace(/```json|```/g,"").trim())}catch(e){throw new Error("Jawaban AI tidak terbaca. Coba lagi.")}
+  var cl=tx.replace(/```json|```/g,"").trim();
+  try{return JSON.parse(cl)}catch(e){
+    var k=cl.lastIndexOf("}");
+    if(k>0){try{return JSON.parse(cl.slice(0,k+1)+"]}")}catch(e2){}}
+    throw new Error("Jawaban AI tidak terbaca. Coba lagi.");
+  }
 }
 async function api(action,body){
   if(action==="transcribe"){
     var file=body.file,lang=body.language;
     var hint=lang==="id"?"Bahasa ucapan: Indonesia. ":lang==="en"?"Bahasa ucapan: Inggris. ":"";
-    var prompt=hint+"Transkripsikan semua ucapan pada audio ini dalam bahasa aslinya. Bagi menjadi segmen pendek per kalimat atau gagasan (sekitar 3 sampai 15 detik). Untuk tiap segmen beri \"start\" dan \"end\" dalam format MM:SS (menit:detik dari awal audio) dan \"text\". Jangan menerjemahkan dan jangan mengarang. Jika tidak ada ucapan, kembalikan daftar kosong.";
+    var prompt=hint+"Transkripsikan semua ucapan pada audio ini dalam bahasa aslinya. Bagi menjadi segmen pendek per kalimat atau gagasan (sekitar 3 sampai 15 detik). Untuk tiap segmen beri \"start\" dan \"end\" dalam format MM:SS (menit:detik dari awal audio) dan \"text\". Jangan menerjemahkan dan jangan mengarang. Jika audio berupa lagu atau ada bagian yang berulang, tulis tiap segmen satu kali sesuai waktunya, jangan mengulang tanpa henti, dan lewati bagian musik tanpa suara. Jika tidak ada ucapan, kembalikan daftar kosong.";
     var schema={type:"OBJECT",properties:{segments:{type:"ARRAY",items:{type:"OBJECT",properties:{start:{type:"STRING"},end:{type:"STRING"},text:{type:"STRING"}},required:["start","end","text"]}}},required:["segments"]};
-    var out=await gem([{text:prompt},{inline_data:{mime_type:"audio/wav",data:await b64(file)}}],schema,body.ui);
+    var out=await gem([{text:prompt},{inline_data:{mime_type:"audio/wav",data:await b64(file)}}],schema,body.ui,{models:TR,max:8192,timeout:75000});
     return {segments:(out.segments||[]).map(function(x){return{start:toSec(x.start),end:toSec(x.end),text:String(x.text||"").trim()}}).filter(function(x){return isFinite(x.start)&&isFinite(x.end)&&x.end>=x.start&&x.text})};
   }
   var segs=body.segments,count=body.count||5,minSec=body.minSec||20,maxSec=body.maxSec||60,style=body.style,duration=body.duration||0;
@@ -129,7 +136,7 @@ async function api(action,body){
   var goal=style==="menarik"?"momen paling menarik, lucu, mengejutkan, atau emosional yang cocok jadi video pendek TikTok":"poin-poin paling penting dan paling berisi informasi";
   var p2="Kamu editor video. Dari transkrip berstempel waktu (detik), pilih bagian untuk dipotong jadi klip pendek. start dan end dalam detik (angka), mengikuti batas kalimat pada transkrip. Klip tidak boleh saling tumpang tindih. title maksimal 8 kata, reason satu kalimat singkat, keduanya dalam bahasa yang sama dengan transkrip.\n\nPilih maksimal "+count+" klip berisi "+goal+". Durasi tiap klip antara "+minSec+" dan "+maxSec+" detik. Mulai klip di awal gagasan dan akhiri setelah gagasan selesai.\n\nTranskrip:\n"+tr;
   var sc2={type:"OBJECT",properties:{clips:{type:"ARRAY",items:{type:"OBJECT",properties:{start:{type:"NUMBER"},end:{type:"NUMBER"},title:{type:"STRING"},reason:{type:"STRING"}},required:["start","end","title","reason"]}}},required:["clips"]};
-  var res=await gem([{text:p2}],sc2,body.ui),mx=Number(duration)||Infinity;
+  var res=await gem([{text:p2}],sc2,body.ui,{timeout:60000}),mx=Number(duration)||Infinity;
   var clips=(res.clips||[]).map(function(c){return{start:Math.max(0,Number(c.start)),end:Math.min(mx,Number(c.end)),title:String(c.title||"Klip"),reason:String(c.reason||"")}}).filter(function(c){return isFinite(c.start)&&isFinite(c.end)&&c.end-c.start>=3}).sort(function(a,b){return a.start-b.start}).slice(0,count);
   return {clips:clips};
 }
@@ -200,7 +207,7 @@ $("go").onclick=async function(){
         start:function(){stop();waiting=false;c.note="mengunggah audio…";draw()},
         up:function(f){
           c.p=Math.max(c.p,.05+.4*f);
-          if(f>=1&&!waiting){waiting=true;ta=Date.now();c.note="AI menyalin ucapan…";iv=setInterval(function(){c.p=Math.max(c.p,.45+.52*(1-Math.exp(-(Date.now()-ta)/tau)));updT();draw()},250)}
+          if(f>=1&&!waiting){waiting=true;ta=Date.now();c.note="AI menyalin ucapan…";iv=setInterval(function(){c.p=Math.max(c.p,.45+.52*(1-Math.exp(-(Date.now()-ta)/tau)));c.note="AI menyalin ucapan… "+fmt((Date.now()-ta)/1000);updT();draw()},500)}
           else if(!waiting)c.note="mengunggah audio "+Math.round(f*100)+"%";
           updT();draw();
         },
